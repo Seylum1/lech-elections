@@ -79,12 +79,12 @@ async function sdel(k) {
 }
 async function sdelPrefix(prefix) {
   try {
-    const r = await fetch(SCRIPT_URL + "?action=getall");
-    const d = await r.json();
-    if (!d.success) return;
-    const keys = Object.keys(d.data || {}).filter(k => k.startsWith(prefix));
-    for (const k of keys) await sdel(k);
-  } catch {}
+    await fetch(SCRIPT_URL, {
+      method: "POST", mode: "no-cors",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ action: "delprefix", prefix }),
+    });
+  } catch(e) { console.error("sdelPrefix", prefix, e); }
 }
 
 /* ── Styles ─────────────────────────────────────────────── */
@@ -230,6 +230,33 @@ function Toast({ msg, color }) {
   );
 }
 
+function ProcessingOverlay({ label }) {
+  if (!label) return null;
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:99999, background:"rgba(0,0,0,.88)",
+                  display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+                  fontFamily:"'Cinzel',serif" }}>
+      <div style={{ background:C.s1, border:`2px solid ${C.redD}`, borderRadius:4,
+                    padding:"2.5rem 3rem", maxWidth:420, width:"90%", textAlign:"center" }}>
+        <div style={{ fontSize:32, marginBottom:"1rem", animation:"pulse 1s infinite" }}>⚠</div>
+        <div style={{ fontSize:14, letterSpacing:"0.18em", color:C.redL, marginBottom:"0.6rem",
+                      textTransform:"uppercase" }}>DO NOT LEAVE THIS PAGE</div>
+        <div style={{ fontSize:20, color:C.text, fontWeight:700, marginBottom:"0.75rem",
+                      letterSpacing:"0.1em" }}>{label}</div>
+        <div style={{ fontSize:13, color:C.textD, fontStyle:"italic", lineHeight:1.7 }}>
+          Writing to the database — navigating away or refreshing now may corrupt or partially delete your data.
+        </div>
+        <div style={{ marginTop:"1.5rem", display:"flex", justifyContent:"center", gap:6 }}>
+          {[0,1,2,3,4].map(i => (
+            <div key={i} style={{ width:7, height:7, borderRadius:"50%", background:C.red,
+                                   opacity: 0.3, animation:`pulse 1.2s ${i*0.2}s infinite` }}/>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Seat calculation ───────────────────────────────────── */
 function calcSeats(candidates, votes) {
   const cands = (candidates || []).filter(c => c.status === "approved");
@@ -266,38 +293,44 @@ function getProjection(results) {
   return { label:`${topP.name} Minority Government`, sub:`${topS} seats — no coalition partner`, color:topP.color, icon:"⚖", tier:"minority" };
 }
 
-/* ── Seat Bar ────────────────────────────────────────────── */
+/* ── Seat Bar — grouped by party, sorted by seats desc ──── */
 function SeatBar({ results }) {
-  const q   = (results||[]).filter(c => c.qualifies);
-  const tot = q.reduce((a,c) => a+c.seats, 0);
+  const q = (results||[]).filter(c => c.qualifies);
+  // Group by party
+  const partySeats = {};
+  q.forEach(c => { partySeats[c.party] = (partySeats[c.party]||0) + c.seats; });
+  // Sort parties by seats descending
+  const sorted = Object.entries(partySeats)
+    .sort((a,b) => b[1]-a[1])
+    .map(([pid, seats]) => ({ party: PARTIES.find(p=>p.id===pid), seats }))
+    .filter(x => x.party && x.seats > 0);
+  const tot = sorted.reduce((a,x) => a+x.seats, 0);
   return (
     <div style={{ marginBottom:"1.25rem" }}>
-      <div style={{ height:26, background:C.s3, borderRadius:3, overflow:"hidden", display:"flex",
+      <div style={{ height:28, background:C.s3, borderRadius:3, overflow:"hidden", display:"flex",
                     border:`1px solid ${C.border}`, position:"relative" }}>
-        {q.map(c => {
-          const p = PARTIES.find(x => x.id===c.party);
-          const pct = tot>0 ? (c.seats/tot)*100 : 0;
-          return pct>0 ? <div key={c.id} title={`${c.name} — ${c.seats} seats`}
-            style={{ width:`${pct}%`, background:p?.color||"#666", transition:"width .9s ease" }}/> : null;
+        {sorted.map(({party:p, seats}) => {
+          const pct = tot>0 ? (seats/tot)*100 : 0;
+          return <div key={p.id} title={`${p.name} — ${seats} seats`}
+            style={{ width:`${pct}%`, background:p.color, transition:"width .9s ease", flexShrink:0 }}/>;
         })}
-        <div style={{ position:"absolute", left:"50%", top:0, bottom:0, width:2, background:"rgba(255,255,255,.18)" }} title="Majority line (500)"/>
+        <div style={{ position:"absolute", left:"50%", top:0, bottom:0, width:2,
+                      background:"rgba(255,255,255,.25)", zIndex:1 }} title="Majority (500)"/>
       </div>
-      <div style={{ display:"flex", justifyContent:"space-between", margin:"3px 0 8px" }}>
+      <div style={{ display:"flex", justifyContent:"space-between", margin:"3px 0 10px" }}>
         <span style={{ fontFamily:"'Cinzel',serif", fontSize:8, color:C.textDD }}>0</span>
         <span style={{ fontFamily:"'Cinzel',serif", fontSize:8, color:C.textDD }}>— 500 MAJORITY —</span>
         <span style={{ fontFamily:"'Cinzel',serif", fontSize:8, color:C.textDD }}>1000</span>
       </div>
-      <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
-        {PARTIES.map(p => {
-          const seats = q.filter(c=>c.party===p.id).reduce((a,c)=>a+c.seats,0);
-          if (!seats) return null;
-          return (
-            <div key={p.id} style={{ display:"flex", alignItems:"center", gap:5 }}>
-              <div style={{ width:9, height:9, borderRadius:"50%", background:p.color }}/>
-              <span style={{ fontSize:12, color:C.textD }}>{p.name}: <strong style={{ color:C.text }}>{seats}</strong></span>
-            </div>
-          );
-        })}
+      <div style={{ display:"flex", flexWrap:"wrap", gap:"0.6rem 1.2rem" }}>
+        {sorted.map(({party:p, seats}) => (
+          <div key={p.id} style={{ display:"flex", alignItems:"center", gap:6 }}>
+            <div style={{ width:10, height:10, borderRadius:2, background:p.color, flexShrink:0 }}/>
+            <span style={{ fontFamily:"'Cinzel',serif", fontSize:11, color:C.textD }}>
+              {p.name} <strong style={{ color:p.color }}>{seats}</strong>
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -398,48 +431,71 @@ function Results({ candidates, votes, election, elHistory }) {
         ? <div style={{ fontSize:15, color:C.textD, fontStyle:"italic", padding:"1.5rem", textAlign:"center" }}>
             {election ? "No approved candidates yet." : "No election is currently running."}
           </div>
-        : results.map(c => {
-            const p = PARTIES.find(x => x.id===c.party);
-            const allocTotal = results.filter(r=>r.qualifies).reduce((a,r)=>a+r.seats,0);
-            const pct = allocTotal>0 ? (c.seats/TOTAL_SEATS)*100 : 0;
-            return (
-              <div key={c.id} className="fu"
-                style={{ background:C.s2, border:`1px solid ${C.border}`,
-                          borderLeft:`3px solid ${p?.color||C.border}`, borderRadius:"0 3px 3px 0",
-                          padding:".8rem 1rem", marginBottom:5, opacity:c.qualifies?1:0.5 }}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:5 }}>
-                  <div>
-                    <span style={{ fontFamily:"'Cinzel',serif", fontSize:14, color:C.text, fontWeight:600 }}>{c.name}</span>
-                    <span style={{ marginLeft:8 }}><PartyBadge pid={c.party}/></span>
-                    {!c.qualifies && (
-                      <span style={{ marginLeft:8, fontFamily:"'Cinzel',serif", fontSize:9, color:C.redL,
-                                     letterSpacing:"0.1em", border:`1px solid ${C.redL}44`, padding:"1px 6px", borderRadius:2 }}>
-                        BELOW THRESHOLD
-                      </span>
-                    )}
+        : (() => {
+            // Group candidates by party, sum seats, sort parties biggest→smallest
+            const partyMap = {};
+            results.forEach(c => {
+              if (!partyMap[c.party]) partyMap[c.party] = { party:PARTIES.find(p=>p.id===c.party), seats:0, candidates:[] };
+              partyMap[c.party].seats += c.seats;
+              partyMap[c.party].candidates.push(c);
+            });
+            const partyGroups = Object.values(partyMap)
+              .sort((a,b) => b.seats - a.seats);
+            const maxSeats = partyGroups[0]?.seats || 1;
+            return partyGroups.map(({ party:p, seats:partySeats, candidates:partyCands }) => (
+              <div key={p?.id||"x"} className="fu" style={{ marginBottom:"1rem" }}>
+                {/* Party header row */}
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
+                               background:C.s1, border:`1px solid ${p?.color||C.border}44`,
+                               borderLeft:`4px solid ${p?.color||C.border}`,
+                               borderRadius:"0 3px 3px 0", padding:".65rem 1rem", marginBottom:3 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                    <span style={{ fontFamily:"'Cinzel',serif", fontSize:15, color:p?.color||C.text, fontWeight:700 }}>
+                      {p?.name||"Unknown"}
+                    </span>
+                    <span style={{ fontFamily:"'Cinzel',serif", fontSize:10, color:C.textDD, letterSpacing:"0.1em" }}>
+                      {partyCands.filter(c=>c.qualifies).length} MP{partyCands.filter(c=>c.qualifies).length!==1?"s":""}
+                    </span>
                   </div>
-                  <div style={{ display:"flex", alignItems:"center", gap:"1.1rem" }}>
-                    <div style={{ textAlign:"right" }}>
-                      <div style={{ fontFamily:"'Cinzel',serif", fontSize:22, fontWeight:700,
-                                    color:c.qualifies?(p?.color||C.gold):C.textDD }}>
-                        {c.seats}
-                      </div>
-                      <div style={{ fontFamily:"'Cinzel',serif", fontSize:9, color:C.textDD, letterSpacing:"0.1em" }}>SEATS</div>
-                    </div>
-                    <div style={{ textAlign:"right" }}>
-                      <div style={{ fontFamily:"'Cinzel',serif", fontSize:15, color:C.textD }}>{c.voteCount}</div>
-                      <div style={{ fontFamily:"'Cinzel',serif", fontSize:9, color:C.textDD, letterSpacing:"0.1em" }}>VOTES</div>
-                    </div>
+                  <div style={{ textAlign:"right" }}>
+                    <span style={{ fontFamily:"'Cinzel',serif", fontSize:26, fontWeight:700, color:p?.color||C.text }}>{partySeats}</span>
+                    <span style={{ fontFamily:"'Cinzel',serif", fontSize:10, color:C.textDD, letterSpacing:"0.1em", marginLeft:5 }}>SEATS</span>
                   </div>
                 </div>
-                {c.qualifies && (
-                  <div style={{ height:4, background:C.s3, borderRadius:3, overflow:"hidden" }}>
-                    <div style={{ height:"100%", width:`${pct}%`, background:p?.color||C.redD, transition:"width .8s ease", borderRadius:3 }}/>
+                {/* Seat bar for this party */}
+                {partySeats > 0 && (
+                  <div style={{ height:5, background:C.s3, borderRadius:"0 0 3px 3px", overflow:"hidden", marginBottom:4 }}>
+                    <div style={{ height:"100%", width:`${(partySeats/maxSeats)*100}%`,
+                                  background:p?.color||C.redD, transition:"width .8s ease" }}/>
                   </div>
                 )}
+                {/* Candidates under this party */}
+                {partyCands.sort((a,b)=>b.seats-a.seats).map(c => (
+                  <div key={c.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+                                            padding:".45rem 1rem .45rem 1.4rem",
+                                            background:C.s2, border:`1px solid ${C.border}`,
+                                            borderLeft:`2px solid ${p?.color||C.border}55`,
+                                            borderRadius:"0 2px 2px 0", marginBottom:2,
+                                            opacity:c.qualifies?1:0.45 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                      <span style={{ fontSize:13, color:C.text }}>{c.name}</span>
+                      {!c.qualifies && (
+                        <span style={{ fontFamily:"'Cinzel',serif", fontSize:8, color:C.redL,
+                                       border:`1px solid ${C.redL}44`, padding:"1px 5px", borderRadius:2, letterSpacing:"0.08em" }}>
+                          BELOW THRESHOLD
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display:"flex", alignItems:"center", gap:"1rem" }}>
+                      <span style={{ fontFamily:"'Cinzel',serif", fontSize:14, fontWeight:700,
+                                     color:c.qualifies?(p?.color||C.gold):C.textDD }}>{c.seats}</span>
+                      <span style={{ fontSize:12, color:C.textDD }}>{c.voteCount}v</span>
+                    </div>
+                  </div>
+                ))}
               </div>
-            );
-          })
+            ));
+          })()
       }
     </div>
   );
@@ -637,13 +693,14 @@ function Vote({ candidates, election, votes, onVote }) {
 }
 
 /* ── Admin ───────────────────────────────────────────────── */
-function Admin({ candidates, setCandidates, election, setElection, votes, setVotes, elHistory, setElHistory, notify }) {
+function Admin({ candidates, setCandidates, election, setElection, votes, setVotes, elHistory, setElHistory, notify, setProcessing }) {
   const [pw, setPw]           = useState("");
   const [authed, setAuthed]   = useState(false);
   const [storedHash, setStoredHash] = useState(null);
   const [newPw, setNewPw]     = useState("");
   const [elName, setElName]   = useState("");
   const [loading, setLoading] = useState(false);
+  // setProcessing passed via props from App
 
   useEffect(() => { sget("bh-admin-hash").then(h => setStoredHash(h)); }, []);
 
@@ -706,19 +763,23 @@ function Admin({ candidates, setCandidates, election, setElection, votes, setVot
 
   /* Wipe only ballots, preserve candidates + election */
   const wipeBallots = async () => {
+    setProcessing("Wiping Ballots…");
     setVotes({});
     await sdelPrefix("bh-vote-");
+    setProcessing("");
     notify("All ballots wiped.", C.redL);
   };
 
   /* Full reset — clear everything for current election */
   const fullReset = async () => {
+    setProcessing("Resetting All Data…");
     setCandidates([]);
     setVotes({});
     setElection(null);
     await sdelPrefix("bh-vote-");
     await sdelPrefix("bh-cand-");
     await sdel("bh-election");
+    setProcessing("");
     notify("All election data cleared.", C.redL);
   };
 
@@ -730,12 +791,28 @@ function Admin({ candidates, setCandidates, election, setElection, votes, setVot
     setElName("");
   };
 
-  const closeElection = () => {
-    setElection(e => ({ ...e, status:"closed", registrationOpen:false, votingOpen:false, closedAt:Date.now() }));
-    notify("Voting closed. Election is now done.", C.gold);
+  // Just pauses voting — election stays active, can reopen
+  const closeVoting = () => {
+    setElection(e => {
+      const updated = { ...e, votingOpen:false, votingPausedAt:Date.now() };
+      sset("bh-election", updated);
+      return updated;
+    });
+    notify("Voting paused. You can reopen it.", C.gold);
+  };
+
+  // Permanently ends the election — enables Certify
+  const endElection = () => {
+    setElection(e => {
+      const updated = { ...e, status:"closed", registrationOpen:false, votingOpen:false, closedAt:Date.now() };
+      sset("bh-election", updated);
+      return updated;
+    });
+    notify("Election ended. Ready to certify.", C.gold);
   };
 
   const certify = async () => {
+    setProcessing("Certifying Election…");
     const voteSnap = {};
     Object.entries(votes||{}).filter(([,v]) => v.status==="approved").forEach(([k,v]) => { voteSnap[k] = v; });
     const record = {
@@ -748,6 +825,7 @@ function Admin({ candidates, setCandidates, election, setElection, votes, setVot
     setElection({ ...record });
     setElHistory(hist);
     await sset("bh-election-history", hist);
+    setProcessing("");
     notify("Election certified and archived.", C.gold);
   };
 
@@ -813,18 +891,25 @@ function Admin({ candidates, setCandidates, election, setElection, votes, setVot
               </span>
             </div>
             <div style={{ display:"flex", gap:".5rem", flexWrap:"wrap", alignItems:"center" }}>
+              {/* Registration */}
               {election.status==="active" && election.registrationOpen && (
                 <ArmBtn label="✦ Close Registration" confirmLabel="Close reg?" onConfirm={()=>setElection(e=>({...e,registrationOpen:false}))} variant="orange"/>
               )}
               {election.status==="active" && !election.registrationOpen && (
                 <Btn onClick={()=>setElection(e=>({...e,registrationOpen:true}))} variant="ghost" small>✦ Reopen Reg</Btn>
               )}
+              {/* Voting — pause/resume without ending election */}
               {election.status==="active" && !election.votingOpen && (
-                <Btn onClick={()=>setElection(e=>({...e,votingOpen:true,votingOpenedAt:Date.now()}))} variant="green" small>● Open Voting</Btn>
+                <Btn onClick={()=>setElection(e=>{ const u={...e,votingOpen:true,votingOpenedAt:Date.now()}; sset("bh-election",u); return u; })} variant="green" small>● Open Voting</Btn>
               )}
               {election.status==="active" && election.votingOpen && (
-                <ArmBtn label="■ Close Voting" confirmLabel="Close voting?" onConfirm={closeElection} variant="danger"/>
+                <ArmBtn label="■ Pause Voting" confirmLabel="Pause voting?" onConfirm={closeVoting} variant="orange"/>
               )}
+              {/* End election permanently */}
+              {election.status==="active" && (
+                <ArmBtn label="⬛ End Election" confirmLabel="End permanently?" onConfirm={endElection} variant="danger"/>
+              )}
+              {/* Certify once ended */}
               {election.status==="closed" && (
                 <Btn variant="gold" onClick={certify}>⚜ Certify &amp; Archive</Btn>
               )}
@@ -973,7 +1058,17 @@ function App() {
   const [election, setElection] = useState(null);
   const [elHistory, setElHistory] = useState([]);
   const [notif,    setNotif]    = useState(null);
+  const [processingLabel, setProcessingLabel] = useState("");
   const ntRef = useRef(null);
+
+  // Warn before unload if a DB operation is in flight
+  useEffect(() => {
+    const handler = e => {
+      if (processingLabel) { e.preventDefault(); e.returnValue = ""; }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [processingLabel]);
 
   /* ── Load from storage once ── */
   useEffect(() => {
@@ -1053,6 +1148,7 @@ function App() {
     <div style={{ background:C.bg, minHeight:"100vh", color:C.text }}>
       <Gstyle/>
       <Toast msg={notif?.msg} color={notif?.color}/>
+      <ProcessingOverlay label={processingLabel}/>
 
       {/* Header */}
       <div style={{ background:C.s1, borderBottom:`1px solid ${C.border}`, borderTop:`3px solid ${C.red}` }}>
@@ -1109,7 +1205,7 @@ function App() {
         <div style={{ display: tab==="results"  ? "block" : "none" }}><Results  candidates={candidates} votes={votes} election={election} elHistory={elHistory}/></div>
         <div style={{ display: tab==="vote"     ? "block" : "none" }}><Vote     candidates={candidates} election={election} votes={votes} onVote={handleVote}/></div>
         <div style={{ display: tab==="register" ? "block" : "none" }}><Register election={election} onSubmit={handleRegister}/></div>
-        <div style={{ display: tab==="admin"    ? "block" : "none" }}><Admin    candidates={candidates} setCandidates={setCandidates} election={election} setElection={setElection} votes={votes} setVotes={setVotes} elHistory={elHistory} setElHistory={setElHistory} notify={notify}/></div>
+        <div style={{ display: tab==="admin"    ? "block" : "none" }}><Admin    candidates={candidates} setCandidates={setCandidates} election={election} setElection={setElection} votes={votes} setVotes={setVotes} elHistory={elHistory} setElHistory={setElHistory} notify={notify} setProcessing={setProcessingLabel}/></div>
       </div>
 
       <div style={{ borderTop:`1px solid ${C.border}`, padding:"1rem", fontFamily:"'Cinzel',serif", fontSize:9, color:C.textDD, letterSpacing:"0.2em", textAlign:"center" }}>
