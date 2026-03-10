@@ -45,13 +45,16 @@ async function sget(k) {
 }
 async function sset(k, v) {
   try {
-    const r = await fetch(SCRIPT_URL, {
-      method: "POST",
+    // POST must use no-cors — Apps Script redirects break CORS response reading
+    await fetch(SCRIPT_URL, {
+      method: "POST", mode: "no-cors",
       headers: { "Content-Type": "text/plain" },
       body: JSON.stringify({ action: "set", key: k, value: JSON.stringify(v) }),
     });
-    const d = await r.json();
-    return d.success === true;
+    // Verify with a read-back GET (readable, no CORS issues)
+    await new Promise(r => setTimeout(r, 600));
+    const check = await sget(k);
+    return check !== null;
   } catch(e) { console.error("sset", k, e); return false; }
 }
 async function sdel(k) {
