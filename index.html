@@ -644,13 +644,42 @@ function Admin({ candidates, setCandidates, election, setElection, votes, setVot
   };
 
   /* Candidate actions */
-  const approveCand = id => setCandidates(cs => cs.map(c => c.id===id ? {...c,status:"approved"} : c));
-  const rejectCand  = id => setCandidates(cs => cs.map(c => c.id===id ? {...c,status:"rejected"} : c));
-  const removeCand  = id => { setCandidates(cs => cs.filter(c => c.id!==id)); notify("Candidate removed.", C.redL); };
+  const approveCand = id => setCandidates(cs => {
+    const updated = cs.map(c => c.id===id ? {...c,status:"approved"} : c);
+    sset("bh-candidates", updated);
+    return updated;
+  });
+  const rejectCand = id => setCandidates(cs => {
+    const updated = cs.map(c => c.id===id ? {...c,status:"rejected"} : c);
+    sset("bh-candidates", updated);
+    return updated;
+  });
+  const removeCand = id => {
+    setCandidates(cs => {
+      const updated = cs.filter(c => c.id!==id);
+      sset("bh-candidates", updated);
+      return updated;
+    });
+    notify("Candidate removed.", C.redL);
+  };
 
   /* Ballot actions */
-  const approveBallot = u => { setVotes(v => ({...v, [u]:{...v[u], status:"approved"}})); notify(`Ballot approved: ${u}`); };
-  const refuseBallot  = u => { setVotes(v => ({...v, [u]:{...v[u], status:"refused"}}));  notify(`Ballot refused — ${u} must re-vote.`, C.redL); };
+  const approveBallot = u => {
+    setVotes(v => {
+      const updated = {...v, [u]:{...v[u], status:"approved"}};
+      sset("bh-votes", updated);
+      return updated;
+    });
+    notify(`Ballot approved: ${u}`);
+  };
+  const refuseBallot = u => {
+    setVotes(v => {
+      const updated = {...v, [u]:{...v[u], status:"refused"}};
+      sset("bh-votes", updated);
+      return updated;
+    });
+    notify(`Ballot refused — ${u} must re-vote.`, C.redL);
+  };
 
   /* Wipe only ballots, preserve candidates + election */
   const wipeBallots = () => {
@@ -931,8 +960,7 @@ function App() {
   }, []);
 
   /* ── Auto-save all state to storage whenever it changes ── */
-  useEffect(() => { if (loaded) sset("bh-candidates", candidates); }, [candidates, loaded]);
-  useEffect(() => { if (loaded) sset("bh-votes",      votes);      }, [votes,      loaded]);
+  // NOTE: No auto-save useEffects — explicit saves in each action prevent race conditions
   useEffect(() => {
     if (!loaded) return;
     if (election) sset("bh-election", election);
