@@ -36,6 +36,7 @@ async function sha256(t) {
 // ── Replace with your deployed Apps Script URL ──────────────
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz37c5Okp9c7PkXv38x2lq7Is3RifkJPee5ASb2KQfA7EJgsN0NwrigmiRr1a_G0E6d4Q/exec";
 
+// ── Storage: each vote/candidate is its own row — no concurrent overwrites ──
 async function sget(k) {
   try {
     const r = await fetch(SCRIPT_URL + "?action=get&key=" + encodeURIComponent(k));
@@ -43,27 +44,46 @@ async function sget(k) {
     return (d.success && d.value != null && d.value !== "") ? JSON.parse(d.value) : null;
   } catch(e) { console.error("sget", k, e); return null; }
 }
+async function sgetAll(prefix) {
+  try {
+    const r = await fetch(SCRIPT_URL + "?action=getall");
+    const d = await r.json();
+    if (!d.success) return {};
+    const out = {};
+    Object.entries(d.data || {}).forEach(([k, v]) => {
+      if (k.startsWith(prefix) && v) {
+        try { out[k] = JSON.parse(v); } catch {}
+      }
+    });
+    return out;
+  } catch(e) { console.error("sgetAll", prefix, e); return {}; }
+}
 async function sset(k, v) {
   try {
-    // POST must use no-cors — Apps Script redirects break CORS response reading
     await fetch(SCRIPT_URL, {
       method: "POST", mode: "no-cors",
       headers: { "Content-Type": "text/plain" },
       body: JSON.stringify({ action: "set", key: k, value: JSON.stringify(v) }),
     });
-    // Verify with a read-back GET (readable, no CORS issues)
-    await new Promise(r => setTimeout(r, 600));
-    const check = await sget(k);
-    return check !== null;
+    return true;
   } catch(e) { console.error("sset", k, e); return false; }
 }
 async function sdel(k) {
   try {
     await fetch(SCRIPT_URL, {
-      method: "POST",
+      method: "POST", mode: "no-cors",
       headers: { "Content-Type": "text/plain" },
       body: JSON.stringify({ action: "del", key: k }),
     });
+  } catch {}
+}
+async function sdelPrefix(prefix) {
+  try {
+    const r = await fetch(SCRIPT_URL + "?action=getall");
+    const d = await r.json();
+    if (!d.success) return;
+    const keys = Object.keys(d.data || {}).filter(k => k.startsWith(prefix));
+    for (const k of keys) await sdel(k);
   } catch {}
 }
 
@@ -645,53 +665,60 @@ function Admin({ candidates, setCandidates, election, setElection, votes, setVot
 
   /* Candidate actions */
   const approveCand = id => setCandidates(cs => {
-    const updated = cs.map(c => c.id===id ? {...c,status:"approved"} : c);
-    sset("bh-candidates", updated);
-    return updated;
-  });
-  const rejectCand = id => setCandidates(cs => {
-    const updated = cs.map(c => c.id===id ? {...c,status:"rejected"} : c);
-    sset("bh-candidates", updated);
-    return updated;
-  });
-  const removeCand = id => {
-    setCandidates(cs => {
-      const updated = cs.filter(c => c.id!==id);
-      sset("bh-candidates", updated);
+    return cs.map(c => {
+      if (c.id !== id) return c;
+      const updated = {...c, status:"approved"};
+      sset("bh-cand-" + id, updated);
       return updated;
     });
+  });
+  const rejectCand = id => setCandidates(cs => {
+    return cs.map(c => {
+      if (c.id !== id) return c;
+      const updated = {...c, status:"rejected"};
+      sset("bh-cand-" + id, updated);
+      return updated;
+    });
+  });
+  const removeCand = id => {
+    setCandidates(cs => cs.filter(c => c.id!==id));
+    sdel("bh-cand-" + id);
     notify("Candidate removed.", C.redL);
   };
 
   /* Ballot actions */
   const approveBallot = u => {
     setVotes(v => {
-      const updated = {...v, [u]:{...v[u], status:"approved"}};
-      sset("bh-votes", updated);
-      return updated;
+      const entry = {...v[u], status:"approved"};
+      sset("bh-vote-" + u, entry);
+      return {...v, [u]: entry};
     });
     notify(`Ballot approved: ${u}`);
   };
   const refuseBallot = u => {
     setVotes(v => {
-      const updated = {...v, [u]:{...v[u], status:"refused"}};
-      sset("bh-votes", updated);
-      return updated;
+      const entry = {...v[u], status:"refused"};
+      sset("bh-vote-" + u, entry);
+      return {...v, [u]: entry};
     });
     notify(`Ballot refused — ${u} must re-vote.`, C.redL);
   };
 
   /* Wipe only ballots, preserve candidates + election */
-  const wipeBallots = () => {
+  const wipeBallots = async () => {
     setVotes({});
+    await sdelPrefix("bh-vote-");
     notify("All ballots wiped.", C.redL);
   };
 
   /* Full reset — clear everything for current election */
-  const fullReset = () => {
+  const fullReset = async () => {
     setCandidates([]);
     setVotes({});
     setElection(null);
+    await sdelPrefix("bh-vote-");
+    await sdelPrefix("bh-cand-");
+    await sdel("bh-election");
     notify("All election data cleared.", C.redL);
   };
 
@@ -951,8 +978,27 @@ function App() {
   /* ── Load from storage once ── */
   useEffect(() => {
     (async () => {
-      const c = await sget("bh-candidates");      if (c) setCandidates(c);
-      const v = await sget("bh-votes");           if (v) setVotes(v);
+      // Load votes — try new per-record format first, fall back to old blob
+      const vRows = await sgetAll("bh-vote-");
+      if (Object.keys(vRows).length) {
+        const votes = {};
+        Object.entries(vRows).forEach(([k, v]) => { votes[k.replace("bh-vote-","")] = v; });
+        setVotes(votes);
+      } else {
+        const oldVotes = await sget("bh-votes");
+        if (oldVotes) setVotes(oldVotes);
+      }
+
+      // Load candidates — try new per-record format first, fall back to old blob
+      const cRows = await sgetAll("bh-cand-");
+      if (Object.keys(cRows).length) {
+        const cands = Object.values(cRows).sort((a,b) => (a.submittedAt||0)-(b.submittedAt||0));
+        setCandidates(cands);
+      } else {
+        const oldCands = await sget("bh-candidates");
+        if (oldCands) setCandidates(oldCands);
+      }
+
       const e = await sget("bh-election");        if (e) setElection(e);
       const h = await sget("bh-election-history"); if (h) setElHistory(h);
       setLoaded(true);
@@ -975,15 +1021,14 @@ function App() {
 
   const handleRegister = async d => {
     const newEntry = { id:Date.now().toString(), ...d, status:"pending", submittedAt:Date.now() };
-    const updated = [...candidates, newEntry];
-    setCandidates(updated);
-    const ok = await sset("bh-candidates", updated);
+    setCandidates(cs => [...cs, newEntry]);
+    const ok = await sset("bh-cand-" + newEntry.id, newEntry);
     return ok;
   };
   const handleVote = async (u, cands) => {
-    const updated = {...votes, [u]:{ candidates:cands, status:"pending", submittedAt:Date.now() }};
-    setVotes(updated);
-    const ok = await sset("bh-votes", updated);
+    const entry = { candidates:cands, status:"pending", submittedAt:Date.now() };
+    setVotes(v => ({...v, [u]: entry}));
+    const ok = await sset("bh-vote-" + u, entry);
     return ok;
   };
 
